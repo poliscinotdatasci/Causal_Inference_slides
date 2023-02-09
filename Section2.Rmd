@@ -1,0 +1,226 @@
+---
+title: 'Causal Inference TA Section (2): Matching'
+author: "shengqiaolin@utexas.edu"
+date: "2023-02-08"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## For today
+
+<ol>
+
+<li>Calculating Mahalanobis distance</li>
+
+<li>Tutorial: Matching</li>
+
+<li>Replication: Wang and Huang (CPS2020)</li>
+
+<li>Some other resources</li>
+
+</ol>
+
+## Calculating Mahalanobis distance
+
+$Mahalanobis\ Distance_{ij} = (X_i − X_j )′\Sigma^{−1}(X_i − X_j )$
+
+where $\Sigma$ stands var-covar matrix of X.
+
+For example, if $X_i=(0,0)$, $X_j=(1,0)$, $\Sigma= \begin{bmatrix} 1&0 \\ 0&1 \\ \end{bmatrix}$
+
+```{r mahalanobis}
+mahalanobis(c(0,0), c(1,0), cov=matrix(c(1,0,0,1),2,2))
+```
+
+## Tutorial: Matching
+
+This example is adopted from Jasjeet S. Sekhon.[The 2004 Florida Optical Voting Machine Controversy: A Causal Analysis Using Matching](http://sekhon.berkeley.edu/papers/SekhonOpticalMatch.pdf).
+
+```{r , message=FALSE,warning=FALSE}
+library(Matching)
+load("FLopticalData.RData")
+attach(data)
+```
+
+The unit of analysis is county in Florida. The treatment is *etouch* i.e. voting machine for electronic voting, the outcome is *bush04*, the vote share forBush in 2004.
+
+We start with looking at the data.
+
+```{r , message=FALSE,warning=FALSE}
+dim(data)
+names(data)
+```
+
+These counties are very heterogeneous on many variables: partisanship, races, education, turnout etc.
+
+```{r , message=FALSE,warning=FALSE}
+summary(data)
+```
+
+If we simply looks at the difference in means, using electronical voting decreased Bush's share
+
+```{r}
+table(etouch)
+tapply(bush04, etouch, mean)
+summary(lm(bush04 ~ etouch))
+```
+
+What if we add some covariates given the heterogeneity among counties. Let's start with vote shares for Bush in 2000.
+
+```{r}
+plot(bush04 ~ votePer00.rep)
+points(bush04[etouch==1] ~ votePer00.rep[etouch==1], pch=19)
+abline(0,1, lty=3)
+legend("bottomright", c("non-etouch", "etouch"), pch=c(1,19))
+```
+
+```{r}
+summary(lm(bush04 ~ etouch + votePer00.rep))
+```
+
+We then create variables for the share of both parties in 2004 registration and add them into the model:
+
+```{r}
+reg2pty04.rep <- regTot04.rep / (regTot04.rep + regTot04.dem)
+reg2pty04.dem <- regTot04.dem / (regTot04.rep + regTot04.dem)
+summary(lm(bush04 ~ etouch + votePer00.rep + reg2pty04.rep))
+```
+
+Note that p-value is 0.98, which indicates a super strong **nonfinding**. The changes in the significance of etouch suggest the results are very model-based. Matching might help, for
+
+```{r, warning=FALSE}
+par(mfrow=c(1,1))
+plot(reg2pty04.rep, jitter(etouch, factor=.5), pch=19,
+     ylab="eTouch", bty="n", xlab="04 Rep registration %")
+```
+
+### Propensity Score Matching
+
+-   Run a logit/probit model to estimate propensity scores for each observation
+
+-   Matching treated and control groups based on the propensity scores
+
+-   Show balance of your matching
+
+-   Estimate the treatment effects (ATT)
+
+We start with calculating the propensity of each county to employ voting machines using logistic regression. Here we use the share of each party in voter registration in 2004 and the population structure (share of each race). The distributions look quite different. Treated groups are those that very likely to be treated and control groups are those unlikely to be treated.
+
+```{r}
+PS <- glm(etouch ~ regTot04.dem + regTot04.rep + regTot04.ind + hisp00 + white00 + black00, family=binomial(link="logit"))
+par(mfrow=c(2,1))
+hist(PS$fitted.values[etouch==1], main="eVoting")
+hist(PS$fitted.values[etouch==0], main="non-eVoting")
+```
+
+We then match the sample based on propensity scores and estimate the treatment effect (By default, it uses 1-1 matching. All weights=1). The result remains insignificant.
+
+```{r}
+r1 <- Match(Y=bush04, Tr=etouch, X=PS$fitted.values)
+summary(r1)
+```
+
+Let check the balance of matching. We take two examples: the propensity and the population structure.
+
+```{r, message=FALSE, warning=FALSE}
+library(weights)
+par(mfcol=c(2,2))
+hist(PS$fitted.values[etouch==1],
+     main=c("Full Sample", "Treated"))
+hist(PS$fitted.values[etouch==0], 
+     main=c("Full Sample", "Untreated"))
+wtd.hist(PS$fitted.values[r1$index.treated],
+         weight=r1$weights,
+         main=c("Matched Sample", "Treated"))
+wtd.hist(PS$fitted.values[r1$index.control],
+         weight=r1$weights,
+         main=c("Matched Sample", "Untreated"))
+```
+
+```{r, message=FALSE, warning=FALSE}
+par(mfcol=c(2,2))
+hist(white00[etouch==1],
+     main=c("Full Sample", "Treated"))
+hist(white00[etouch==0], 
+     main=c("Full Sample", "Untreated"))
+wtd.hist(white00[r1$index.treated],
+         weight=r1$weights,
+         main=c("Matched Sample", "Treated"))
+wtd.hist(white00[r1$index.control],
+         weight=r1$weights,
+         main=c("Matched Sample", "Untreated"))
+```
+
+We can also see some tables and stats if needed.
+
+```{r balance}
+mb <- MatchBalance(etouch ~ regTot04.dem + regTot04.rep + regTot04.ind + hisp00 + white00 + black00,  match.out=r1)
+```
+
+Do matching affect other variables? Seems not
+
+```{r, message=FALSE, warning=FALSE}
+par(mfcol=c(2,2))
+hist(votePer96.rep[etouch==1],
+     main=c("Full Sample", "Treated"))
+hist(votePer96.rep[etouch==0], 
+     main=c("Full Sample", "Untreated"))
+wtd.hist(votePer96.rep[r1$index.treated],
+         weight=r1$weights,
+         main=c("Matched Sample", "Treated"))
+wtd.hist(votePer96.rep[r1$index.control],
+         weight=r1$weights,
+         main=c("Matched Sample", "Untreated"))
+```
+
+#### Matching on variables
+
+```{r}
+r2 <- Match(Y=bush04, Tr=etouch, X=data[,c(3:5, 15:17)])
+summary(r2)
+```
+
+### Coarsened Exact Matching
+
+-   Select covariates for matching (and the cutoff/threshold, if needed)
+
+-   Matching the treated and control groups based on the covarites
+
+-   Show balance
+
+-   Estimate the effects
+
+In addition to Propensity Score Matching, another widely used method of matching is coarsened exact matching. We use package "[MatchIt](https://kosukeimai.github.io/MatchIt/index.html)'' to replicate results from Wang and Huang 2020, CPS, [When "Fake News" Becomes Real: The Consequences of False Government Denials in an Authoritarian Country](https://doi.org/10.1177/0010414020957672).
+
+```{r, message=FALSE,warning=FALSE}
+library(haven)
+library(MatchIt)
+Data <- read_dta("cps-wave2_clean.dta")
+cem1<- matchit(experience~age+education+income+trust+life+interest+female+rural+ccpmembership,method = 'cem',data=Data)
+plot(cem1, type = "density", interactive = FALSE,which.xs = ~age+education+income)
+plot(summary(cem1),xlim=c(0,1))
+```
+
+```{r, message=FALSE,warning=FALSE}
+mdata<- match.data(cem1)
+summary(lm(rumor~experience,data=mdata))
+```
+
+### Other resources
+
+<ol>
+
+<li>
+
+Many studies now use matching as a robustness check and leave most details of matching process in the appendix. But some does use mataching as a main specification and published in top journal. E.g., Agerberg and Sohlberg, CPS 2021, [Personal Proximity and Reactions to Terrorism](https://doi.org/10.1177/0010414021997162). (codes are based on Stata).
+
+<li>
+
+Most studies use matching in cross-sectional data. For time-series cross-sectional data, see Imai, Kim, and Wang (2021) [*PanelMatch*](https://cran.r-project.org/web/packages/PanelMatch/index.html):
+
+</ol>
